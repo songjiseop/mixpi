@@ -271,24 +271,26 @@ do istep = 1, md%nsteps
      ! VELOCITY-VERLET STEP WITH THE CLASSICAL ATOMS - !
      ! FOR A TIMESTEP OF DT/2 ------------------------ !
      ! ----------------------------------------------- !
-  if (classical%natoms > 0) then
-    CALL vv_update_classical(classical, path_integral, md, md%dt/2.0d0, istep, para_var)
-  endif
+!  if (classical%natoms > 0) then
+!    CALL vv_update_classical(classical, path_integral, md, md%dt/2.0d0, istep, para_var)
+!  endif
 
-  if (trim(md%propagation) == 'normal_fftw' .and. path_integral%num_rp > 0) then
-    write(*,*)' option not currently supported! '
-  else if (trim(md%propagation) == 'normal_manual') then
-    CALL vv_update_pi_normal_manual(classical, path_integral, md, md%dt,istep, para_var)
-  else if (trim(md%propagation) == 'none' .and. path_integral%num_rp > 0) then
-    CALL vv_update_pi(classical,path_integral,md, md%dt,istep)
-  else if (path_integral%num_rp > 0) then
-    write(*,*)' this propagation scheme does not match an option give '
-    STOP
-  endif
+!  if (trim(md%propagation) == 'normal_fftw' .and. path_integral%num_rp > 0) then
+!    write(*,*)' option not currently supported! '
+!  else if (trim(md%propagation) == 'normal_manual') then
+!    CALL vv_update_pi_normal_manual(classical, path_integral, md, md%dt,istep, para_var)
+!  else if (trim(md%propagation) == 'none' .and. path_integral%num_rp > 0) then
+!    CALL vv_update_pi(classical,path_integral,md, md%dt,istep)
+!  else if (path_integral%num_rp > 0) then
+!    write(*,*)' this propagation scheme does not match an option give '
+!    STOP
+!  endif
 
-  if (classical%natoms > 0) then
-    CALL vv_update_classical(classical, path_integral, md, md%dt/2.d0, istep, para_var)
-  endif
+!  if (classical%natoms > 0) then
+!    CALL vv_update_classical(classical, path_integral, md, md%dt/2.d0, istep, para_var)
+!  endif
+
+  CALL vv_update_joint(classical, path_integral, md, md%dt, istep, para_var)
 
     ! --------------------------------------------- !
     ! Second call to the thermostat --------------- !
@@ -318,6 +320,7 @@ do istep = 1, md%nsteps
   ! --------------------------------------------!
   ! PRINT THE TRAJECTORY AND ENERGIES IF THE ---!
   ! PRINT FREQUENCY IS MET.---------------------!
+  ! --------------------------------------------!
   if(mod(istep,md%freq_print)==0) THEN
     if (trim(adjustl(md%print_level)) == 'high') then
       write(203,'(i10,f16.2,7f20.10)')istep, istep*md%dt/fstota,classical%kinetic,classical%potential, path_integral%kinetic, &
@@ -345,7 +348,7 @@ do istep = 1, md%nsteps
   endif
 
      ! ----------------------------------------------- !
-     ! BASED UPONNTHE INPUT FREQ_PRINT, WE WILL SAVE- !
+     ! BASED UPONNTHE INPUT FREQ_PRINT, WE WILL SAVE - !
      ! THE CLASSICAL AND RP POSITIONS IN A TRAJECTORY- !
      ! VARIABLE IF PRINT_LEVEL IS HIGH --------------- ! 
      ! ----------------------------------------------- !
@@ -745,7 +748,7 @@ END SUBROUTINE calc_pimd_energy
 
 
 ! ---------------------------------------------- !
-! The velocity-verlet interrator for the ------- !
+! The velocity-verlet integrator for the ------- !
 ! classical atoms with a time-step of dt ------- !
 ! The following updates occur:  ---------------- !
 ! p(t + dt/2) <- p(t) + dt/2 * F(t) ------------ !
@@ -780,7 +783,7 @@ CALL update_pi_p(path_integral, dt)
 END SUBROUTINE vv_update_pi
 
 ! ---------------------------------------------- !
-! The velocity-verlet interrator for the ------- !
+! The velocity-verlet integrator for the ------- !
 ! classical atoms with a time-step of dt ------- !
 ! The following updates occur:  ---------------- !
 ! p(t + dt/2) <- p(t) + dt/2 * F(t) ------------ !
@@ -817,6 +820,72 @@ CALL update_classical_p(classical, dt)
 END SUBROUTINE vv_update_classical
 ! ---------------------------------------------- !
 
+! JS OCT6
+! ---------------------------------------------- !
+! The velocity-verlet integrator for the ------- !
+! classical atoms and RPs. One new CP2K  ------- !
+! force evaluation per full step --------------- !
+! ---------------------------------------------- !
+SUBROUTINE vv_update_joint(classical, path_integral, md, dt, step, para_var)
+implicit none
+
+TYPE(classical_type)                     ::classical
+TYPE(path_integral_env)                  ::path_integral
+TYPE(md_info)                            ::md
+TYPE(parallel_env)                       ::para_var
+real(kind=8)                             ::dt
+integer                                  ::step
+integer                                  ::crate, itime_cstart, itime_cend
+LOGICAL                                  ::record_time
+
+record_time = step <= md%print_step .and. para_var%my_rank == 0
+
+! first half momentum update using stored forces for both classical and rp
+CALL update_all_p(classical, path_integral, dt)
+
+! full coordinate/free-RP propagation
+if (record_time) then
+  CALL system_clock(count_rate=crate)
+  CALL system_clock(itime_cstart)
+endif
+
+! position propagation under dt
+CALL propagate_all_free(classical, path_integral, md, dt, step)
+
+if (record_time) then
+  CALL system_clock(itime_cend)
+  open(111, file='runtime_info.dat', position='append')
+  write(111,*) ' time for free propagation step', step, &
+    real(itime_cend-itime_cstart)/real(crate)
+  close(111)
+endif
+
+! refresh forces at new configuration
+CALL clear_all_forces(classical, path_integral)
+CALL update_force_env(classical, path_integral, md)
+
+if (record_time) then
+  CALL system_clock(count_rate=crate)
+  CALL system_clock(itime_cstart)
+endif
+
+CALL calc_force_cp2k(classical,path_integral,md)
+
+if (record_time) then
+  CALL system_clock(itime_cend)
+  open(111, file='runtime_info.dat', position='append')
+  write(111,*) ' time for calc_force_cp2k step ', step, &
+    real(itime_cend-itime_cstart)/real(crate)
+  close(111)
+endif
+
+! add springs for none and refresh centroid force constraints
+CALL calc_force_pi(path_integral, md, 0)
+
+! second half momentum update
+CALL update_all_p(classical, path_integral, dt)
+
+END SUBROUTINE vv_update_joint
 
 ! ---------------------------------------------- !
 ! Subroutine that evaluates the forces on the -- !
@@ -1052,6 +1121,11 @@ enddo
 
 END SUBROUTINE calc_xx_energy
 
+! ---------------------------------------------- !
+! - Subroutine that might add the bead spring -- !
+! - calculation on the ring-polymer beads and -- !
+! - then calculates constraint centroid forces.  !
+! ---------------------------------------------- !
 
 SUBROUTINE calc_force_pi(path_integral, md, flag)
 implicit none
@@ -1272,6 +1346,194 @@ CALL update_pi_p(path_integral, dt)
 
 
 END SUBROUTINE vv_update_pi_normal_manual
+
+! JS OCT6
+! --------------------------------------------- !
+! Subroutine to update centroid position from - !
+! current bead positions ---------------------- !
+! --------------------------------------------- !
+SUBROUTINE update_rp_centroid(path_integral, md)
+implicit none
+
+TYPE(path_integral_env)   ::path_integral
+TYPE(md_info)             ::md
+integer                   :: irp,idim
+
+do irp = 1, path_integral%num_rp
+  do idim = 1, md%space_dim
+    path_integral%rp(irp)%centroid(idim) = sum(path_integral%rp(irp)%x(:,idim))&
+    /dble(real(path_integral%rp(irp)%num_beads))
+  enddo
+enddo
+
+END SUBROUTINE update_rp_centroid
+
+! JS OCT6
+! --------------------------------------------- !
+! Subroutine that propagates kinetic and spring !
+! dynamics, no external momentum updates ------ !
+! --------------------------------------------- !
+SUBROUTINE propagate_rp_free(path_integral, md, dt, step)
+implicit none
+
+TYPE(path_integral_env)           ::path_integral
+TYPE(md_info)                     ::md
+integer                           ::step
+real(kind=8)                      ::dt
+
+if (path_integral%num_rp == 0) return
+
+CALL manual_normal_rotation(path_integral)
+CALL manual_cart_to_normal(path_integral, md, step)
+CALL update_normal_coord(path_integral, md, dt)
+CALL manual_normal_to_cart(path_integral, md, step)
+
+END SUBROUTINE propagate_rp_free
+
+! JS OCT6
+! --------------------------------------------- !
+! Subroutine that clears all forces before ---- !
+! fresh force evaluation ---------------------- !
+! --------------------------------------------- !
+SUBROUTINE clear_all_forces(classical, path_integral)
+implicit none
+
+TYPE(path_integral_env)           ::path_integral
+TYPE(classical_type)              ::classical
+integer                           ::irp
+
+if (classical%natoms > 0) then
+  classical%force = 0.0d0
+endif
+
+do irp = 1, path_integral%num_rp
+  path_integral%rp(irp)%force = 0.0d0
+enddo
+
+END SUBROUTINE clear_all_forces
+
+! JS OCT6
+! --------------------------------------------- !
+! Subroutine that applies fixed and centroid -- !
+! momentum constraints ------------------------ !
+! --------------------------------------------- !
+SUBROUTINE constrain_all_p(classical, path_integral, md)
+
+TYPE(path_integral_env)           ::path_integral
+TYPE(classical_type)              ::classical
+TYPE(md_info)                     ::md
+integer                           ::icon, index, irp, iatom, idim
+real(kind=8)                      ::mean_p
+
+if (md%fixed) then
+  do icon = 1, md%n_fixed_atoms
+    index = md%fixed_list(icon,1)
+
+    if (index < 1 .or. &
+        index > path_integral%num_rp + classical%natoms) then
+      write(*,*) 'Invalid fixed-particle index: ', index
+      STOP
+    endif
+
+    do idim = 1, md%space_dim
+      if (md%fixed_list(icon,idim+1) /= 1) cycle
+
+      if (index <= path_integral%num_rp) then
+        path_integral%rp(index)%p(:,idim) = 0.0d0
+      else
+        iatom = index - path_integral%num_rp
+        classical%p(iatom,idim) = 0.0d0
+      endif
+    enddo
+  enddo
+endif
+
+if (md%centroid) then
+  do icon = 1, md%n_centroids
+    irp = md%centroid_list(icon,1)
+
+    if (irp < 1 .or. irp > path_integral%num_rp) then
+      write(*,*) 'Invalid centroid-constraint index: ', irp
+      STOP
+    endif
+
+    do idim = 1, md%space_dim
+      if (md%centroid_list(icon,idim+1) /= 1) cycle
+
+      mean_p = sum(path_integral%rp(irp)%p(:,idim)) / &
+               dble(path_integral%rp(irp)%num_beads)
+
+      path_integral%rp(irp)%p(:,idim) = &
+        path_integral%rp(irp)%p(:,idim) - mean_p
+    enddo
+  enddo
+endif
+
+END SUBROUTINE constrain_all_p
+
+! JS OCT6
+! --------------------------------------------- !
+! Half-step momentum update for all particles-- !
+! --------------------------------------------- !
+SUBROUTINE update_all_p(classical, path_integral, dt)
+implicit none
+
+TYPE(path_integral_env)           ::path_integral
+TYPE(classical_type)              ::classical
+real(kind=8)                      ::dt
+
+if (classical%natoms > 0) then
+  CALL update_classical_p(classical, dt)
+endif
+
+if (path_integral%num_rp > 0) then
+  CALL update_pi_p(path_integral, dt)
+endif
+
+END SUBROUTINE update_all_p
+
+! JS OCT6
+! --------------------------------------------- !
+! Propagate classical kinetic dynamics and RP-- !
+! free dynamics over a full timestep ---------- !
+! --------------------------------------------- !
+SUBROUTINE propagate_all_free(classical, path_integral, md, dt, step)
+implicit none
+
+TYPE(path_integral_env)           ::path_integral
+TYPE(classical_type)              ::classical
+TYPE(md_info)                     ::md
+real(kind=8)                      ::dt
+integer                           ::step
+
+! Validate before moving particles
+if (path_integral%num_rp > 0) then
+  select case (trim(md%propagation))
+  case ('normal_manual', 'none')
+  ! supported
+  case default
+    write(*,*) 'Unsupported propagation mode: ', trim(md%propagation)
+    STOP
+  end select
+endif
+
+if (classical%natoms > 0) then
+  CALL update_classical_x(classical, dt)
+endif
+
+if (path_integral%num_rp > 0) then
+  select case (trim(md%propagation))
+  case ('normal_manual')
+    CALL propagate_rp_free(path_integral, md, dt, step)
+  case ('none')
+    CALL update_pi_x(path_integral, md, dt)
+  end select
+
+  CALL update_rp_centroid(path_integral, md)
+endif
+
+END SUBROUTINE propagate_all_free
+
 
 ! --------------------------------------------- !
 ! Subroutine that updates the momentum of the - !
