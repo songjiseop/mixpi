@@ -290,6 +290,7 @@ do istep = 1, md%nsteps
 !    CALL vv_update_classical(classical, path_integral, md, md%dt/2.d0, istep, para_var)
 !  endif
 
+  ! JS OCT8
   CALL vv_update_joint(classical, path_integral, md, md%dt, istep, para_var)
 
     ! --------------------------------------------- !
