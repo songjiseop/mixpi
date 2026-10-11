@@ -849,7 +849,6 @@ if (record_time) then
   CALL system_clock(itime_cstart)
 endif
 
-! position propagation under dt
 CALL propagate_all_free(classical, path_integral, md, dt, step)
 
 if (record_time) then

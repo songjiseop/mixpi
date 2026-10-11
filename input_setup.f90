@@ -55,9 +55,10 @@ if (trim(adjustl(md%print_level)) /= 'low' .and. trim(adjustl(md%print_level)) /
     write(*,*)' print_levels are "high" and "low" '
 close(101)
 
+! JS OCT11: fixed typo
 if (para_var%my_rank == 0) then
 write(*,*)' ------------------------------------ '
-write(*,*)' The following input was recieved: '
+write(*,*)' The following input was received: '
 write(*,*) 'Number of MD step ', md%nsteps
 write(*,*) 'Print frequency for energy, trajectory, and force (if specified) information ', md%freq_print
 write(*,*) 'Time step ', md%dt
