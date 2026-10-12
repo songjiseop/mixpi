@@ -850,7 +850,7 @@ if (record_time) then
   CALL system_clock(itime_cstart)
 endif
 
-CALL propagate_all_free(classical, path_integral, md, dt, step)
+CALL propagate_all_x(classical, path_integral, md, dt, step)
 
 if (record_time) then
   CALL system_clock(itime_cend)
@@ -1497,7 +1497,7 @@ END SUBROUTINE update_all_p
 ! Propagate classical kinetic dynamics and RP-- !
 ! free dynamics over a full timestep ---------- !
 ! --------------------------------------------- !
-SUBROUTINE propagate_all_free(classical, path_integral, md, dt, step)
+SUBROUTINE propagate_all_x(classical, path_integral, md, dt, step)
 implicit none
 
 TYPE(path_integral_env)           ::path_integral
@@ -1532,7 +1532,7 @@ if (path_integral%num_rp > 0) then
   CALL update_rp_centroid(path_integral, md)
 endif
 
-END SUBROUTINE propagate_all_free
+END SUBROUTINE propagate_all_x
 
 
 ! --------------------------------------------- !
