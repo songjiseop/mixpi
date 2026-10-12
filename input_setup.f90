@@ -998,12 +998,6 @@ CALL calc_constraints(classical, path_integral, md, para_var)
 if (md%init_vel .eqv. .true. ) then 
   if (para_var%my_rank == 0) write(*,*)' ------ INITIALIZE CLASSICAL OUTER LOOP VELOCITIES------ ' 
   CALL initialize_classical_velocities(classical,path_integral,md, para_var)
-  !open(222,file='atom-vel-1.dat')
-  !do i = 1, classical%natoms
-  !  write(222,'(3d20.6)') classical%i_velocity(i,:)
-  !enddo
-  !close(222)
-  !write(*,*) 'rescale vel '
 if (para_var%my_rank == 0) write(*,*)' ------RESCALE VELOCITIES FOR TEMPERATURE, SYSTEM COM, AND CONSTRAINTS------ '
   CALL rescale_velocities(classical, path_integral, md, para_var)
   open(222,file='atom-vel.dat')
@@ -1021,12 +1015,16 @@ if (para_var%my_rank == 0) write(*,*)' ------RESCALE VELOCITIES FOR TEMPERATURE,
   enddo
   close(222)
 
+! JS OCT13
 
 else
 if (para_var%my_rank == 0) write(*,*)' ------READS IN CLASSICAL OUTER LOOP VELOCITIES FROM ATOM-VEL.DAT------'
   open(222,file='atom-vel.dat')
   do i = 1, classical%natoms
     read(222,*) classical%i_velocity(i,:)
+    if (vel_atomic .eqv. .false.) then
+      classical%i_velocity(i,:) = classical%i_velocity(i,:) * (AtoBohr/fstota)
+    endif
   enddo
   close(222)
 endif
