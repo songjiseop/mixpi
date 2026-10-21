@@ -1103,11 +1103,12 @@ do iclassical = 1, classical%natoms
       do ixx = 1, path_integral%rp(md%xx_atom_num)%num_beads
         dist_vec(:) = path_integral%rp(md%xx_atom_num)%x(ixx,:) - classical%x(iclassical,:)
         dist = dsqrt(dot_product(dist_vec, dist_vec))
+        ! JS OCT 15 removed square factor in denominator
         if (dist < md%xx_rcut(location)) then
           if (md%xx_exclude(location)) then
             pot = - ((path_integral%rp(md%xx_atom_num)%charge * classical%ff_atom_charges(iclassical)) &
-              /dist**2) + ((path_integral%rp(md%xx_atom_num)%charge * classical%ff_atom_charges(iclassical)) &
-              /md%xx_rcut(location)**2) 
+              /dist) + ((path_integral%rp(md%xx_atom_num)%charge * classical%ff_atom_charges(iclassical)) &
+              /md%xx_rcut(location)) 
             tot_pot = tot_pot + pot
           endif 
         endif
