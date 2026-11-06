@@ -60,7 +60,10 @@ include 'mpif.h'
   CALL read_in_md(md, para_var)
 ! ------------------------------------------- !
   ! ----------------------------------- !
+  ! JS OCT 22 Added plumed initialize
   CALL cp2k_pimd_initialize(path_integral, classical, md, para_var)
+
+  CALL initialize_plumed(classical, md)
 ! ------------------------------------------- !
 if (para_var%my_rank == 0) then
   call system_clock(itime_setup)
@@ -74,8 +77,17 @@ endif
 !call the pimd md routine.
 !this will conduct a MD run for the ring polymer
 !and classical atoms (if present).
+! JS OCT22 Added plumed finalize
 
 CALL run_md(classical, path_integral, md, para_var)
+
+block
+  use metadynamics, only: metadyn_finalise_plumed
+
+  if (md%plumed_active) then
+    CALL metadyn_finalise_plumed()
+  endif
+end block
 
 ! ------------------------------------------- !
 

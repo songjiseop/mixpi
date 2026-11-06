@@ -136,7 +136,7 @@ if (para_var%my_rank == 0) then
   call system_clock(count_rate=crate)
   call system_clock(itime_cstart)
 endif
-CALL calc_force_cp2k(classical, path_integral, md)      !call 1 at initial config. FORCE/ENERGY  
+CALL calc_force_cp2k(classical, path_integral, md, 0)      !call 1 at initial config. FORCE/ENERGY  
 if (para_var%my_rank == 0) then
   call system_clock(itime_cend)
   open(111,file='runtime_info.dat',position='append')
@@ -775,7 +775,7 @@ do irp = 1, path_integral%num_rp
   path_integral%rp(irp)%force = 0.0d0
 enddo
 CALL update_force_env(classical, path_integral, md)
-CALL calc_force_cp2k(classical, path_integral, md)      !6th call to FORCE/ENERGY      needed
+CALL calc_force_cp2k(classical, path_integral, md, step)      !6th call to FORCE/ENERGY      needed
 CALL calc_force_pi(path_integral, md, 0)
 
 
@@ -812,7 +812,7 @@ do irp = 1, path_integral%num_rp
   path_integral%rp(irp)%force = 0.0d0
 enddo
 CALL update_force_env(classical, path_integral, md)        
-CALL calc_force_cp2k(classical, path_integral, md)            !call 3 (after moving classical atoms) FORCE/ENERGY NEEDED
+CALL calc_force_cp2k(classical, path_integral, md, step)            !call 3 (after moving classical atoms) FORCE/ENERGY NEEDED
 CALL calc_force_pi(path_integral, md, 0)
 
 
@@ -844,20 +844,38 @@ record_time = step <= md%print_step .and. para_var%my_rank == 0
 ! first half momentum update using stored forces for both classical and rp
 CALL update_all_p(classical, path_integral, dt)
 
-! full coordinate/free-RP propagation
-if (record_time) then
-  CALL system_clock(count_rate=crate)
-  CALL system_clock(itime_cstart)
+! classical/RP position update
+if (path_integral%num_rp > 0) then
+  select case (trim(md%propagation))
+  case ('normal_manual')
+    if (record_time) then
+      CALL system_clock(count_rate=crate)
+      CALL system_clock(itime_cstart)
+    endif
+
+    CALL propagate_rp_free(path_integral, md, dt, step)
+
+    if (record_time) then
+      CALL system_clock(itime_cend)
+      open(111, file='runtime_info.dat', position='append')
+      write(111,*) ' time for free propagation step', step, &
+        real(itime_cend-itime_cstart)/real(crate)
+      close(111)
+    endif
+
+    CALL update_rp_centroid(path_integral, md)
+  
+  case ('none')
+    CALL update_pi_x(path_integral, md, dt)
+
+  case default
+    write(*,*) 'Unsupported propagation mode: ', trim(md%propagation)
+    STOP
+  end select
 endif
 
-CALL propagate_all_x(classical, path_integral, md, dt, step)
-
-if (record_time) then
-  CALL system_clock(itime_cend)
-  open(111, file='runtime_info.dat', position='append')
-  write(111,*) ' time for free propagation step', step, &
-    real(itime_cend-itime_cstart)/real(crate)
-  close(111)
+if (classical%natoms > 0) then
+  CALL update_classical_x(classical, dt)
 endif
 
 ! refresh forces at new configuration
@@ -869,7 +887,7 @@ if (record_time) then
   CALL system_clock(itime_cstart)
 endif
 
-CALL calc_force_cp2k(classical,path_integral,md)
+CALL calc_force_cp2k(classical,path_integral,md, step)
 
 if (record_time) then
   CALL system_clock(itime_cend)
@@ -887,11 +905,13 @@ CALL update_all_p(classical, path_integral, dt)
 
 END SUBROUTINE vv_update_joint
 
+! JS OCT 22 
 ! ---------------------------------------------- !
 ! Subroutine that evaluates the forces on the -- !
 ! classical atoms using the CP2K subroutines --- !
+! Also calculates plumed when appropriate ------ !
 ! ---------------------------------------------- !
-SUBROUTINE calc_force_cp2k(classical, path_integral, md)
+SUBROUTINE calc_force_cp2k(classical, path_integral, md, step)
 use libcp2k
 implicit none
 
@@ -899,7 +919,7 @@ TYPE(classical_type)                     ::classical
 TYPE(path_integral_env)                  ::path_integral
 TYPE(md_info)                            ::md
 real(kind=8),allocatable,dimension(:)    ::force
-integer                                  ::i, irp, icount, ierror
+integer                                  ::i, irp, icount, ierror, step
 
 include 'mpif.h'
 
@@ -915,6 +935,9 @@ force = 0.0d0
 call MPI_BARRIER(MPI_COMM_WORLD,ierror)
 CALL cp2k_calc_energy_force(classical%cp2k_env_flag)
 call MPI_BARRIER(MPI_COMM_WORLD,ierror)
+if (md%plumed_active) then
+  CALL calculate_plumed(classical, step)
+endif
 CALL cp2k_get_forces(classical%cp2k_env_flag, force, (classical%natoms+path_integral%total_beads)*md%space_dim)
 
 ! ------------------------------------------------ !
@@ -1335,7 +1358,7 @@ CALL update_force_env(classical, path_integral, md)      !5th call to calculcate
       call system_clock(itime_cstart)
     endif
 
-CALL calc_force_cp2k(classical, path_integral, md)
+CALL calc_force_cp2k(classical, path_integral, md, icount)
     if (icount <= md%print_step .and. para_var%my_rank == 0) then
       call system_clock(itime_cend)
       open(111,file='runtime_info.dat',position='append')
@@ -2069,5 +2092,26 @@ grnd = z0*sig + x
 END SUBROUTINE rnd_gauss
 ! ------------------------------------------------- !
 
+! JS OCT22 
+! ----------------------------------------------------- !
+! - Subroutine to calculate plumed, obtains CP2K's env- !
+! - and calls existing PLUMED interface, which passes - !
+! - step number and coordinates to PLUMED to do calc -- !
+! ------- then adds bias forces to CP2K's arrays ------ !
+! ----------------------------------------------------- !
+SUBROUTINE calculate_plumed(classical, step)
+use f77_interface, only: f_env_type, f_env_add_defaults, f_env_rm_defaults
+use metadynamics, only: metadyn_integrator
+implicit none
+
+TYPE(classical_type)            :: classical
+TYPE(f_env_type), pointer       :: plumed_env
+integer                         :: step, ierror
+
+CALL f_env_add_defaults(classical%cp2k_env_flag, plumed_env)
+CALL metadyn_integrator(plumed_env%force_env, step)
+CALL f_env_rm_defaults(plumed_env, ierror)
+
+END SUBROUTINE calculate_plumed
 
 END MODULE md_run

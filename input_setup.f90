@@ -660,6 +660,28 @@ call MPI_BARRIER(MPI_COMM_WORLD,ierror)
 CALL cp2k_create_force_env(classical%cp2k_env_flag,trim(classical%cp2k_input_file)//c_null_char, &
     trim(classical%cp2k_output_file)//c_null_char)
 
+! JS OCT22 Check if PLUMED can be read
+
+! ------------------------------------------------ !
+! --- CHECKS THAT CP2K CAN READ PLUMED SETTINGS -- !
+! ------------------------------------------------ !
+block
+  use f77_interface, only: f_env_type, f_env_get_from_id
+  type(f_env_type), pointer :: plumed_env
+  
+  call f_env_get_from_id(classical%cp2k_env_flag, plumed_env)
+
+  if (para_var%my_rank == 0) then
+    write(*,*) 'Metadynamics environment present: ', &
+      associated(plumed_env%force_env%meta_env)
+
+    if (associated(plumed_env%force_env%meta_env)) then
+      write(*,*) 'USE_PLUMED: ', &
+        plumed_env%force_env%meta_env%use_plumed
+    endif
+  endif
+end block
+
 ! ------------------------------------------------ !
 ! USES THE CP2K FORCE_ENV TO READ IN THE NUMBER OF !
 ! TOTAL ATOMS (THE RP BEADS AND THEN THE CLASSICAL !
@@ -1405,5 +1427,42 @@ deallocate(seed)
 
 END SUBROUTINE init_rnd_seed
 ! ----------------------------------------------------- !
+! JS OCT22 
+
+! ----------------------------------------------------- !
+! -------- Subroutine to initialize plumed ------------ !
+! ----------------------------------------------------- !
+SUBROUTINE initialize_plumed(classical, md)
+
+use f77_interface, only: f_env_type, f_env_add_defaults, f_env_rm_defaults
+use metadynamics, only: metadyn_initialise_plumed
+use simpar_types, only: simpar_type
+
+implicit none
+
+TYPE(classical_type)         :: classical
+TYPE(md_info)                :: md
+TYPE(f_env_type), pointer    :: plumed_env
+TYPE(simpar_type), target    :: simpar_data
+TYPE(simpar_type), pointer   :: simpar
+integer                      :: ierror
+
+md%plumed_active = .false.
+
+CALL f_env_add_defaults(classical%cp2k_env_flag, plumed_env)
+
+if (associated(plumed_env%force_env%meta_env)) then
+  if (plumed_env%force_env%meta_env%use_plumed) then
+    simpar => simpar_data
+    simpar%dt = md%dt
+
+    CALL metadyn_initialise_plumed(plumed_env%force_env, simpar, 0)
+    md%plumed_active = .true.
+  endif
+endif
+
+CALL f_env_rm_defaults(plumed_env, ierror)
+
+END SUBROUTINE initialize_plumed
 
 END MODULE input_setup
