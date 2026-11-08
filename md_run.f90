@@ -906,6 +906,7 @@ CALL update_all_p(classical, path_integral, dt)
 END SUBROUTINE vv_update_joint
 
 ! JS OCT 22 
+! JS NOV 6, adding tests to check if PLUMED works
 ! ---------------------------------------------- !
 ! Subroutine that evaluates the forces on the -- !
 ! classical atoms using the CP2K subroutines --- !
@@ -919,6 +920,8 @@ TYPE(classical_type)                     ::classical
 TYPE(path_integral_env)                  ::path_integral
 TYPE(md_info)                            ::md
 real(kind=8),allocatable,dimension(:)    ::force
+real(kind=8),allocatable                 ::force_before(:)
+integer                                  ::diagnostic_rank, diagnostic_unit
 integer                                  ::i, irp, icount, ierror, step
 
 include 'mpif.h'
@@ -935,10 +938,40 @@ force = 0.0d0
 call MPI_BARRIER(MPI_COMM_WORLD,ierror)
 CALL cp2k_calc_energy_force(classical%cp2k_env_flag)
 call MPI_BARRIER(MPI_COMM_WORLD,ierror)
+!if (md%plumed_active) then
+!  CALL calculate_plumed(classical, step)
+!endif
+!CALL cp2k_get_forces(classical%cp2k_env_flag, force, (classical%natoms+path_integral%total_beads)*md%space_dim)
+
 if (md%plumed_active) then
+  if (step == 0) then
+    allocate(force_before(size(force)))
+    CALL cp2k_get_forces(classical%cp2k_env_flag, force_before, size(force_before))
+  endif
   CALL calculate_plumed(classical, step)
 endif
-CALL cp2k_get_forces(classical%cp2k_env_flag, force, (classical%natoms+path_integral%total_beads)*md%space_dim)
+
+CALL cp2k_get_forces(classical%cp2k_env_flag, force, size(force))
+
+if (allocated(force_before)) then
+  CALL MPI_COMM_RANK(MPI_COMM_WORLD, diagnostic_rank, ierror)
+
+  if (diagnostic_rank == 0) then
+    open(newunit=diagnostic_unit, file='plumed_force_check.dat', status='replace')
+    write(diagnostic_unit,'(a)') '# Positions: angstrom; forces: Hartree/Bohr'
+    write(diagnostic_unit,'(a)') '# bead x y z Fx_before Fy_before Fz_before Fx_after Fy_after Fz_after'
+
+    do i = 1, path_integral%rp(1)%num_beads
+      write(diagnostic_unit,'(i6,9es24.15)') i, &
+        path_integral%rp(1)%x(i,:)/AtoBohr, &
+        force_before(3*i-2:3*i), force(3*i-2:3*i)
+    enddo
+
+    close(diagnostic_unit)
+  endif
+
+  deallocate(force_before)
+endif
 
 ! ------------------------------------------------ !
 ! CONVERTS THE ARRAY FORCES(1:NATOMS*DIMENSION) -- !
